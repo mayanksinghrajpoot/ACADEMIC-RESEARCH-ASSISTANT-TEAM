@@ -3,6 +3,7 @@
 from research_assistant.memory.dossier import (
     Claim,
     Contradiction,
+    DroppedClaim,
     Passage,
     ResearchDossier,
     Verdict,
@@ -11,6 +12,7 @@ from research_assistant.memory.dossier import (
 __all__ = [
     "Claim",
     "Contradiction",
+    "DroppedClaim",
     "Passage",
     "ResearchDossier",
     "Verdict",

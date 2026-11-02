@@ -44,6 +44,14 @@ class Verdict(BaseModel):
     supporting_quote: str = ""
 
 
+class DroppedClaim(BaseModel):
+    """A claim removed as unsupported, kept for the final report."""
+
+    text: str
+    reason: str
+    claim_id: str = ""
+
+
 class ResearchDossier(BaseModel):
     """Blackboard passed along the pipeline."""
 
@@ -54,6 +62,7 @@ class ResearchDossier(BaseModel):
     contradictions: list[Contradiction] = Field(default_factory=list)
     contradiction_note: str = ""
     verdicts: list[Verdict] = Field(default_factory=list)
+    dropped_log: list[DroppedClaim] = Field(default_factory=list)
     revision_count: int = 0
     needs_revision: bool = False
     critic_notes: list[str] = Field(default_factory=list)
@@ -75,6 +84,24 @@ class ResearchDossier(BaseModel):
             if (verdict := self.verdict_for(claim.claim_id)) is not None
             and verdict.verdict == "supported"
         ]
+
+    def dropped_claims(self) -> list[DroppedClaim]:
+        """Unsupported claims from the critic retry and from the final verdicts."""
+        seen: set[tuple[str, str]] = set()
+        dropped: list[DroppedClaim] = []
+        for item in self.dropped_log:
+            key = (item.text, item.reason)
+            if key in seen:
+                continue
+            seen.add(key)
+            dropped.append(item)
+        for claim, verdict in self.unsupported_claims():
+            key = (claim.text, verdict.reason)
+            if key in seen:
+                continue
+            seen.add(key)
+            dropped.append(DroppedClaim(text=claim.text, reason=verdict.reason, claim_id=claim.claim_id))
+        return dropped
 
     def unsupported_claims(self) -> list[tuple[Claim, Verdict]]:
         dropped: list[tuple[Claim, Verdict]] = []
