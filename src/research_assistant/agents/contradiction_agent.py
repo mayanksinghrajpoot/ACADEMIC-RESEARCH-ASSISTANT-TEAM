@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from agent_framework import Executor, WorkflowContext, handler
+import json
+
+from agent_framework import Executor, WorkflowContext, handler, tool
 from pydantic import BaseModel, Field
 
 from research_assistant.agents.context import format_passages
+from research_assistant.blackboard import get_bindings, invoke, use_shared
 from research_assistant.grounding import grounded_contradictions
 from research_assistant.llm import Completer
 from research_assistant.memory.dossier import Contradiction, ResearchDossier
@@ -34,6 +37,44 @@ class ContradictionReport(BaseModel):
     contradictions: list[ContradictionDraft] = Field(default_factory=list)
 
 
+@tool
+def read_passages_for_contradictions() -> str:
+    """Read the passages stored on the shared dossier."""
+    return format_passages(get_bindings().dossier.passages) or "(no passages)"
+
+
+@tool
+def commit_contradictions(proposed_json: str) -> str:
+    """Keep only disagreements whose quotes are copied from the cited passages."""
+    dossier = get_bindings().dossier
+    raw = json.loads(proposed_json)
+    if not isinstance(raw, list):
+        raise ValueError("contradictions must be a JSON list.")
+    proposed: list[Contradiction] = []
+    for item in raw:
+        position_a = " ".join(str(item.get("position_a", "")).split())
+        position_b = " ".join(str(item.get("position_b", "")).split())
+        if not position_a or not position_b:
+            continue
+        proposed.append(
+            Contradiction(
+                topic=str(item.get("topic", "")).strip() or "Disagreement",
+                position_a=position_a,
+                passage_ids_a=list(dict.fromkeys(str(value) for value in item.get("passage_ids_a") or [])),
+                quote_a=" ".join(str(item.get("quote_a", "")).split()),
+                position_b=position_b,
+                passage_ids_b=list(dict.fromkeys(str(value) for value in item.get("passage_ids_b") or [])),
+                quote_b=" ".join(str(item.get("quote_b", "")).split()),
+            )
+        )
+    kept, note = grounded_contradictions(dossier, proposed)
+    dossier.contradictions = kept
+    dossier.contradiction_note = note
+    if not kept:
+        return note or "no contradiction"
+    return f"{len(kept)} contradictions"
+
+
 class ContradictionAgent(Executor):
     """Finds opposed positions and drops any pair that is not grounded."""
 
@@ -42,35 +83,24 @@ class ContradictionAgent(Executor):
         self._completer = completer
 
     async def apply(self, dossier: ResearchDossier) -> ResearchDossier:
-        """Find disagreements. Depends only on the retrieved passages."""
-        prompt = (
-            f"Research question:\n{dossier.question}\n\n"
-            f"Retrieved passages:\n{format_passages(dossier.passages)}\n\n"
-            "Return JSON with a contradictions array. Each item has topic, position_a, "
-            "passage_ids_a, quote_a, position_b, passage_ids_b, and quote_b. "
-            "Copy each quote from the passage ids on that side."
-        )
+        """Find disagreements on the shared dossier. Depends only on retrieved passages."""
+        dossier = use_shared(dossier)
+        passages = await invoke("contradiction", read_passages_for_contradictions)
         draft = await self._completer.complete(
             name="contradiction",
             instructions=_INSTRUCTIONS,
-            prompt=prompt,
+            prompt=(
+                f"Research question:\n{dossier.question}\n\n"
+                f"Retrieved passages:\n{passages}\n\n"
+                "Return JSON with a contradictions array. Each item has topic, position_a, "
+                "passage_ids_a, quote_a, position_b, passage_ids_b, and quote_b. "
+                "Copy each quote from the passage ids on that side."
+            ),
             response_format=ContradictionReport,
         )
-        proposed = [
-            Contradiction(
-                topic=item.topic.strip() or "Disagreement",
-                position_a=" ".join(item.position_a.split()),
-                passage_ids_a=list(dict.fromkeys(item.passage_ids_a)),
-                quote_a=" ".join(item.quote_a.split()),
-                position_b=" ".join(item.position_b.split()),
-                passage_ids_b=list(dict.fromkeys(item.passage_ids_b)),
-                quote_b=" ".join(item.quote_b.split()),
-            )
-            for item in draft.contradictions
-            if item.position_a.strip() and item.position_b.strip()
-        ]
-        kept, note = grounded_contradictions(dossier, proposed)
-        return dossier.model_copy(update={"contradictions": kept, "contradiction_note": note})
+        payload = [item.model_dump() for item in draft.contradictions]
+        await invoke("contradiction", commit_contradictions, proposed_json=json.dumps(payload))
+        return dossier
 
     @handler
     async def compare(self, dossier: ResearchDossier, ctx: WorkflowContext[ResearchDossier]) -> None:

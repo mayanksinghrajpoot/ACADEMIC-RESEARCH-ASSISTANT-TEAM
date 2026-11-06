@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from agent_framework import Executor, WorkflowContext, handler
+import json
+
+from agent_framework import Executor, WorkflowContext, handler, tool
 from pydantic import BaseModel, Field
 
+from research_assistant.blackboard import get_bindings, invoke, use_shared
 from research_assistant.llm import Completer
 from research_assistant.memory.dossier import ResearchDossier
 from research_assistant.rag.corpus import Paper
@@ -20,6 +23,26 @@ class QueryDraft(BaseModel):
     sub_queries: list[str] = Field(default_factory=list)
 
 
+@tool
+def list_corpus_titles() -> str:
+    """Read the closed paper titles for this run. Does not search the web."""
+    papers = get_bindings().papers
+    if not papers:
+        return "(no papers)"
+    return "\n".join(f"- {paper.title}" for paper in papers)
+
+
+@tool
+def commit_subqueries(raw_json: str) -> str:
+    """Normalize 3 to 5 sub-queries and write them on the shared dossier."""
+    dossier = get_bindings().dossier
+    raw = json.loads(raw_json)
+    if not isinstance(raw, list):
+        raise ValueError("sub-queries must be a JSON list.")
+    dossier.sub_queries = normalize_subqueries(dossier.question, [str(item) for item in raw])
+    return " | ".join(dossier.sub_queries)
+
+
 class QueryAgent(Executor):
     """Produces 3–5 sub-queries over the provided paper set."""
 
@@ -30,7 +53,8 @@ class QueryAgent(Executor):
 
     @handler
     async def expand(self, dossier: ResearchDossier, ctx: WorkflowContext[ResearchDossier]) -> None:
-        titles = "\n".join(f"- {paper.title}" for paper in self._papers)
+        dossier = use_shared(dossier, papers=self._papers)
+        titles = await invoke("query", list_corpus_titles)
         prompt = (
             f"Research question:\n{dossier.question}\n\n"
             f"Paper titles:\n{titles}\n\n"
@@ -42,9 +66,7 @@ class QueryAgent(Executor):
             prompt=prompt,
             response_format=QueryDraft,
         )
-        dossier = dossier.model_copy(
-            update={"sub_queries": normalize_subqueries(dossier.question, draft.sub_queries)}
-        )
+        await invoke("query", commit_subqueries, raw_json=json.dumps(draft.sub_queries))
         await ctx.send_message(dossier)
 
 

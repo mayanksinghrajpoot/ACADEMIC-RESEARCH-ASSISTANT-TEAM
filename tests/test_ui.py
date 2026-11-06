@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from research_assistant.llm import ModelServiceError, public_error
+from research_assistant.llm import ModelServiceError, chat_models, is_temporary, public_error
 from research_assistant.memory.dossier import Claim, Passage, ResearchDossier, Verdict
 from research_assistant.reporting import report_view
 from research_assistant.ui.server import ResearchServer
@@ -72,6 +72,18 @@ def test_report_view_uses_supported_claims_only() -> None:
         }
     ]
     assert view["dropped"] == [{"text": "Alpha cures every disease.", "reason": "No retrieved passage."}]
+
+
+def test_a_busy_model_is_followed_by_one_that_answers() -> None:
+    models = chat_models("gemini-3.8-flash")
+    assert models == [
+        "gemini-3.8-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+    ]
+    assert chat_models("gemini-3.5-flash").count("gemini-3.5-flash") == 1
+    assert is_temporary(RuntimeError("504 DEADLINE_EXCEEDED"))
 
 
 def test_provider_errors_become_one_sentence() -> None:

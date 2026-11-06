@@ -13,7 +13,7 @@ class Settings(BaseModel):
     """Runtime configuration. Paths are resolved relative to the project root."""
 
     gemini_api_key: str = ""
-    chat_model: str = "gemini-3.8-flash"
+    chat_model: str = "gemini-3.5-flash"
     embedding_model: str = "gemini-embedding-2"
     corpus_dir: Path = Field(default_factory=lambda: Path("corpus"))
     output_dir: Path = Field(default_factory=lambda: Path("outputs"))
@@ -21,6 +21,7 @@ class Settings(BaseModel):
     revision_cap: int = 1
     chunk_size: int = 800
     chunk_overlap: int = 100
+    log_path: Path | None = None
 
     def require_api_key(self) -> None:
         if not self.gemini_api_key.strip():
@@ -56,7 +57,7 @@ def load_settings(project_root: Path | None = None) -> Settings:
 
     return Settings(
         gemini_api_key=os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or "",
-        chat_model=os.getenv("GOOGLE_MODEL") or os.getenv("GEMINI_CHAT_MODEL") or "gemini-3.8-flash",
+        chat_model=os.getenv("GOOGLE_MODEL") or os.getenv("GEMINI_CHAT_MODEL") or "gemini-3.5-flash",
         embedding_model=(
             os.getenv("GOOGLE_EMBEDDING_MODEL")
             or os.getenv("GEMINI_EMBEDDING_MODEL")
@@ -68,6 +69,7 @@ def load_settings(project_root: Path | None = None) -> Settings:
         revision_cap=_positive_int("REVISION_CAP", 1),
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
+        log_path=root / "logs" / "run.log",
     )
 
 

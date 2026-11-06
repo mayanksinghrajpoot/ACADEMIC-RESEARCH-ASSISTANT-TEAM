@@ -248,21 +248,19 @@ def _significant_tokens(text: str) -> set[str]:
 
 
 def mark_revision(dossier: ResearchDossier, revision_cap: int) -> ResearchDossier:
-    """Request one summary rewrite when unsupported claims remain under the cap."""
+    """Request one summary rewrite when unsupported claims remain under the cap.
+
+    Writes the flag onto the same dossier the other agents are using.
+    """
     unsupported = dossier.unsupported_claims()
     notes = [f"{claim.text} — {verdict.reason}" for claim, verdict in unsupported]
     revise = bool(notes) and dossier.revision_count < revision_cap
-    dropped_log = list(dossier.dropped_log)
     if revise:
-        dropped_log.extend(
+        dossier.dropped_log.extend(
             DroppedClaim(text=claim.text, reason=verdict.reason, claim_id=claim.claim_id)
             for claim, verdict in unsupported
         )
-    return dossier.model_copy(
-        update={
-            "needs_revision": revise,
-            "revision_count": dossier.revision_count + (1 if revise else 0),
-            "critic_notes": notes,
-            "dropped_log": dropped_log,
-        }
-    )
+    dossier.needs_revision = revise
+    dossier.revision_count = dossier.revision_count + (1 if revise else 0)
+    dossier.critic_notes = notes
+    return dossier

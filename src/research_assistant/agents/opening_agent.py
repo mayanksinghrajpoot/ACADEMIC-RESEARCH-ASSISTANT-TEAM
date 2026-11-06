@@ -25,14 +25,8 @@ class OpeningDraft(Executor):
 
     @handler
     async def draft(self, dossier: ResearchDossier, ctx: WorkflowContext[ResearchDossier]) -> None:
-        summarized, compared = await asyncio.gather(
+        await asyncio.gather(
             self._summary.apply(dossier),
             self._contradiction.apply(dossier),
         )
-        merged = summarized.model_copy(
-            update={
-                "contradictions": compared.contradictions,
-                "contradiction_note": compared.contradiction_note,
-            }
-        )
-        await ctx.send_message(merged)
+        await ctx.send_message(dossier)

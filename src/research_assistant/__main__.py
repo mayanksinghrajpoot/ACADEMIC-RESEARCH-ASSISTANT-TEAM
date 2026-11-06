@@ -53,6 +53,8 @@ def main(argv: list[str] | None = None) -> int:
     print(dossier.report_markdown)
     print(f"Wrote {markdown_path}")
     print(f"Wrote {json_path}")
+    if settings.log_path is not None:
+        print(f"Appended {settings.log_path}")
     return 0
 
 

@@ -55,7 +55,11 @@ class DroppedClaim(BaseModel):
 
 
 class ResearchDossier(BaseModel):
-    """Blackboard passed along the pipeline."""
+    """One shared blackboard for a run.
+
+    Every agent reads this object and writes only its own fields. The workflow
+    passes the same instance from one agent to the next.
+    """
 
     question: str
     sub_queries: list[str] = Field(default_factory=list)
@@ -69,6 +73,7 @@ class ResearchDossier(BaseModel):
     needs_revision: bool = False
     critic_notes: list[str] = Field(default_factory=list)
     report_markdown: str = ""
+    trace: list[str] = Field(default_factory=list)
 
     def passage_index(self) -> dict[str, Passage]:
         return {passage.passage_id: passage for passage in self.passages}

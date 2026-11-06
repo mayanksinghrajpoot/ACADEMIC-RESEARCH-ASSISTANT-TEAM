@@ -1,70 +1,55 @@
 # Academic Research Assistant Team
 
-A multi-agent system that turns a research question into a short, sourced literature summary. Every claim that remains in the summary maps to a passage retrieved from a local paper corpus. Unsupported claims are listed separately, and disagreements between sources are reported with both positions.
+Six agents turn a research question into a short, sourced literature summary. A claim stays in the summary only when a passage retrieved from the local papers supports it. The coordinator is a [Microsoft Agent Framework](https://learn.microsoft.com/en-us/agent-framework/) workflow. Each agent is one executor module. One `ResearchDossier` is the blackboard: every agent reads that object and writes its own fields. Chat goes through the Gemini Developer API. `OpeningDraft` only starts Summary and Contradiction together. It is not a seventh analyst.
 
-The coordination layer is [Microsoft Agent Framework](https://learn.microsoft.com/en-us/agent-framework/) (Python packages `agent-framework-core` and `agent-framework-gemini`). Chat and embeddings go through the Gemini Developer API. Agents are workflow executors. A typed dossier is the shared memory passed from one agent to the next. The passage index is built once and only the retrieval agent reads it.
+A workflow fits because the steps are ordered, two of them can run at the same time, and the critic has one branch back to Summary. A blackboard fits because later agents need the earlier writes, and a private copy would let those writes drift. RAG fits because the passages are chunks of the supplied papers, and the fact-check gate refuses anything that is not copied from them.
 
 ```mermaid
 flowchart LR
-  query[QueryAgent] --> retrieval[RetrievalAgent]
-  retrieval --> summary[SummaryAgent]
-  summary --> contradiction[ContradictionAgent]
-  contradiction --> factcheck[FactCheckAgent]
-  factcheck -->|"unsupported claims, first pass"| summary
-  factcheck -->|"supported or retry already used"| writer[WriterAgent]
+  query[Query] --> retrieval[Retrieval]
+  retrieval --> summary[Summary]
+  retrieval --> contradiction[Contradiction]
+  summary --> factcheck[FactCheck]
+  contradiction --> factcheck
+  factcheck -->|one retry| summary
+  factcheck --> writer[Writer]
 ```
 
-## Agents
+`architecture.svg` is the same picture with the two tools on each agent.
 
-- **Query** (`agents/query_agent.py`) turns the question into 3–5 search sub-queries over the provided paper titles. It does not search the web.
-- **Retrieval** (`agents/retrieval_agent.py`) fetches passages for each sub-query. Ranking blends positive embedding cosine with lexical overlap (`0.65 * max(cosine, 0) + 0.35 * lexical`). A passage with no word overlap and no positive similarity is dropped, so a query that matches nothing still stops the run. If embeddings fail, ranking falls back to lexical overlap. Document embeddings use Gemini's `RETRIEVAL_DOCUMENT` task, and query embeddings use `RETRIEVAL_QUERY`.
-- **Summary** (`agents/summary_agent.py`) writes claims grouped by theme. Each claim names passage ids. On the first pass it runs at the same time as the contradiction check. On a critic retry it rewrites from the rejection notes, and the contradiction check is not repeated.
-- **Contradiction** (`agents/contradiction_agent.py`) reports where two sources disagree and keeps both positions. Each side must cite different retrieved passages and include a quote copied from one of those passages. If nothing qualifies, the report says no contradiction was found.
-- **Fact-check** (`agents/factcheck_agent.py`) is the critic. A claim is supported only when its passage ids are in the retrieved set and the supporting quote is copied from one of those passages. The gate is enforced in code, so a model verdict cannot restore a claim the gate rejected. If unsupported claims remain, the dossier returns to Summary once.
-- **Writer** (`agents/writer_agent.py`) publishes the final summary without another model call. The overview is the supported claims themselves. Theme bullets include the paper title, passage id, and quote. Dropped claims, including ones removed during the retry, are listed underneath.
+## Roster
 
-## Setup
+| Agent | Module | Tools | Writes on the dossier |
+| --- | --- | --- | --- |
+| Query | `agents/query_agent.py` | `list_corpus_titles`, `commit_subqueries` | 3–5 sub-queries over the paper titles |
+| Retrieval | `agents/retrieval_agent.py` | `embed_subqueries`, `store_retrieved_passages` | passages for those sub-queries |
+| Summary | `agents/summary_agent.py` | `read_passages_for_summary`, `commit_claims` | themed claims that name passage ids |
+| Contradiction | `agents/contradiction_agent.py` | `read_passages_for_contradictions`, `commit_contradictions` | disagreements, or a note that none qualified |
+| Fact-check | `agents/factcheck_agent.py` | `select_checkable_claims`, `commit_verdicts` | verdicts, and one retry flag |
+| Writer | `agents/writer_agent.py` | `draft_supported_overview`, `publish_report` | the markdown report, with no model call |
 
-Python 3.10 or newer. From this directory:
+The tools are plain Python functions wrapped as Agent Framework tools. The agent calls both on every visit. Summary's second visit does not repeat Contradiction.
 
-```bash
-uv sync --extra dev
-cp .env.example .env
-```
+## Memory and retrieval
 
-Set `GOOGLE_API_KEY` in `.env`. `GEMINI_API_KEY` is accepted as an alias. `GOOGLE_MODEL` defaults to `gemini-3.8-flash`, and `GOOGLE_EMBEDDING_MODEL` defaults to `gemini-embedding-2` (`gemini-embedding-2-preview` is the other model the client accepts). `CHUNK_SIZE` and `CHUNK_OVERLAP` control how papers are split. `CHUNK_OVERLAP` must be smaller than `CHUNK_SIZE`.
+The dossier holds the question, sub-queries, passages, claims, contradictions, verdicts, the dropped-claim log, and the report. The passage index holds one chunk per paper section and, when the embedding call works, one document vector per chunk. Ranking is `0.65 * max(cosine, 0) + 0.35 * lexical overlap`. Document embeddings use Gemini `RETRIEVAL_DOCUMENT`. Query embeddings use `RETRIEVAL_QUERY`. Only Retrieval reads the index.
 
-## Run
+## Honest failure
+
+The fact-check model can mark a claim supported and attach a quote that is not in the cited passage. `commit_verdicts` drops that verdict. The claim is listed under dropped claims, and a rewrite is allowed only once. The model cannot restore it. A question the papers never mention, or a search that returns no passage, stops the run instead of inventing a source. Both stops are appended to `logs/run.log`. The file is only ever opened for append.
+
+## Setup and run
+
+Python 3.10 or newer. From this directory: `uv sync --extra dev`, then `cp .env.example .env`. Set `GOOGLE_API_KEY` (`GEMINI_API_KEY` is accepted). `GOOGLE_MODEL` defaults to `gemini-3.5-flash`, then `gemini-3.5-flash-lite` and `gemini-3.1-flash-lite` if Gemini is busy. `GOOGLE_EMBEDDING_MODEL` defaults to `gemini-embedding-2`.
 
 ```bash
 uv run python -m research_assistant "Does retrieval-augmented generation reduce unsupported claims in scientific question answering?"
 ```
 
-The command prints the summary and writes:
+The command prints the summary, writes `outputs/<run_id>.md` and `outputs/<run_id>.json`, and appends `logs/run.log`. `--corpus PATH` selects another directory of `.md` or `.txt` papers. `uv run python -m research_assistant.ui` serves the same pipeline at <http://127.0.0.1:8765>.
 
-- `outputs/<run_id>.md` — themed summary, per-claim sources, contradictions, and dropped claims
-- `outputs/<run_id>.json` — the dossier, from sub-queries through passages and verdicts
+`corpus/` has six short papers. Iyer 2025 reports that showing passages did not reduce unsupported claims. Okonkwo 2025 reports that requiring a passage id and a quote cut that rate from 31 percent to 6 percent.
 
-`--corpus PATH` selects a different directory of `.md` or `.txt` papers. The first line may be a `# Title`.
+## Demo, diagram, log, tests
 
-The run stops with an error, and does not invent sources, when the API key is missing, the corpus directory has no papers, or retrieval finds no passages.
-
-## Page
-
-```bash
-uv run python -m research_assistant.ui
-```
-
-Opens a local page at [http://127.0.0.1:8765](http://127.0.0.1:8765). The form sends one question through the same pipeline and shows the overview, supported claims, contradictions, and dropped claims. The markdown and dossier files are still written under `outputs/`. `--port` chooses a different port.
-
-## Demo corpus
-
-`corpus/` holds six short original papers on retrieval for scientific question answering. Iyer 2025 reports that showing retrieved passages did not reduce unsupported claims. Okonkwo 2025 reports that requiring a passage id and a quote cut that rate from 31 percent to 6 percent. The contradiction agent is there to surface both positions.
-
-## Tests
-
-```bash
-uv run pytest
-```
-
-Tests cover chunk ids, hybrid ranking (including an embedding that must not force a hit), the grounding gate, contradiction quotes, the overview gate, critic routing (one retry, then the writer, and a pass that needs no retry), and the dropped-claim list. They use a scripted completer and do not call the network. A bad setting such as `TOP_K=0` stops the command with `error:` instead of a traceback.
+`demo.ipynb` runs the workflow on two provided papers with a scripted model, so the trace does not need an API key. Run all cells, or `uv run python -m research_assistant.demo`. It prints each agent's tool calls, the summary, and the uncovered-question stop. `architecture.svg` is the diagram. `logs/run.log` is the append-only JSONL log. `uv run pytest` includes `tests/test_scenarios.py`: a supported summary, the critic's one retry, and the two stops against that log.

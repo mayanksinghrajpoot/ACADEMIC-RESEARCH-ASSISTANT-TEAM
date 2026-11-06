@@ -6,9 +6,12 @@ import logging
 import threading
 from collections.abc import Mapping, Sequence
 from typing import Protocol
+from uuid import uuid4
 
 from agent_framework import Case, Default, Workflow, WorkflowBuilder
 from agent_framework.gemini import GeminiChatClient, GeminiEmbeddingClient
+from google import genai
+from google.genai.types import HttpOptions, HttpRetryOptions
 
 from research_assistant.agents import (
     ContradictionAgent,
@@ -20,6 +23,7 @@ from research_assistant.agents import (
 )
 from research_assistant.agents.opening_agent import OpeningDraft
 from research_assistant.agents.retrieval_agent import RetrievalError
+from research_assistant.blackboard import RunBindings, bind_run, record
 from research_assistant.config import Settings
 from research_assistant.llm import Completer, FrameworkCompleter
 from research_assistant.memory.dossier import ResearchDossier
@@ -78,8 +82,14 @@ class QueryEmbedder:
 
 def build_clients(settings: Settings) -> tuple[GeminiChatClient, GeminiEmbeddingClient]:
     settings.require_api_key()
+    # One attempt per model. The SDK's default retries sit on a busy model for
+    # minutes, and the completer already moves to the next model after a 503.
+    chat_transport = genai.Client(
+        api_key=settings.gemini_api_key,
+        http_options=HttpOptions(retry_options=HttpRetryOptions(attempts=1)),
+    )
     return (
-        GeminiChatClient(api_key=settings.gemini_api_key, model=settings.chat_model),
+        GeminiChatClient(model=settings.chat_model, client=chat_transport),
         GeminiEmbeddingClient(api_key=settings.gemini_api_key, model=settings.embedding_model),
     )
 
@@ -202,20 +212,38 @@ async def run_research(
         if papers is None or index is None:
             papers, index = await prepare_corpus(settings, embedding_client)
 
-    if index is None or not corpus_covers(cleaned, index):
-        raise RetrievalError(
-            "These papers do not cover that question. The assistant will not invent sources."
-        )
-
-    workflow = build_workflow(
-        completer=completer,
+    dossier = ResearchDossier(question=cleaned)
+    bindings = RunBindings(
+        dossier=dossier,
         papers=papers,
         index=index,
+        embedder=embedder,
         top_k=settings.top_k,
         revision_cap=settings.revision_cap,
-        embedder=embedder,
+        log_path=settings.log_path,
+        run_id=uuid4().hex[:8],
     )
-    result = await workflow.run(ResearchDossier(question=cleaned))
+    with bind_run(bindings):
+        if index is None or not corpus_covers(cleaned, index):
+            record(
+                "pipeline",
+                "corpus_covers",
+                "These papers do not cover that question. The assistant will not invent sources.",
+                ok=False,
+            )
+            raise RetrievalError(
+                "These papers do not cover that question. The assistant will not invent sources."
+            )
+
+        workflow = build_workflow(
+            completer=completer,
+            papers=papers,
+            index=index,
+            top_k=settings.top_k,
+            revision_cap=settings.revision_cap,
+            embedder=embedder,
+        )
+        result = await workflow.run(dossier)
     outputs = result.get_outputs()
     if not outputs:
         raise RuntimeError("The workflow finished without a literature summary.")

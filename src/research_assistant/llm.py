@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
@@ -18,7 +17,12 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 _QUOTED_MESSAGE = re.compile(r"""['"]message['"]:\s*['"]([^'"]+)['"]""")
-_ATTEMPTS = 2
+# gemini-3.8-flash often returns 503/504. These models answered on the same key.
+_FALLBACK_MODELS = (
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+)
 
 
 class ModelServiceError(RuntimeError):
@@ -58,20 +62,28 @@ class FrameworkCompleter:
             instructions=instructions,
             default_options=ChatOptions(temperature=0),
         )
-        delay = 1.0
-        for attempt in range(_ATTEMPTS):
+        primary = str(getattr(self._client, "model", "") or "")
+        response = None
+        last_error: ChatClientException | None = None
+        for model in chat_models(primary):
+            options: ChatOptions = {"temperature": 0, "response_format": response_format}
+            if model:
+                options["model"] = model
             try:
-                response = await agent.run(
-                    prompt,
-                    options=ChatOptions(temperature=0, response_format=response_format),
-                )
+                response = await agent.run(prompt, options=options)
                 break
             except ChatClientException as exc:
-                if not is_temporary(exc) or attempt == _ATTEMPTS - 1:
+                last_error = exc
+                if not is_temporary(exc):
                     raise ModelServiceError(public_error(exc)) from exc
-                logger.warning("Gemini is busy; retrying %s in %.0f seconds.", name, delay)
-                await asyncio.sleep(delay)
-                delay *= 2
+                logger.warning(
+                    "Gemini model %s is busy; trying another model for %s.",
+                    model or "default",
+                    name,
+                )
+        if response is None:
+            error = last_error or RuntimeError("model request failed")
+            raise ModelServiceError(public_error(error)) from error
         try:
             value = response.value
         except (ValidationError, ValueError) as exc:
@@ -82,13 +94,22 @@ class FrameworkCompleter:
         return response_format.model_validate(value)
 
 
+def chat_models(primary: str) -> list[str]:
+    """Primary model first, then models that still answer when the newest flash is busy."""
+    models: list[str] = []
+    for model in (primary, *_FALLBACK_MODELS):
+        if model and model not in models:
+            models.append(model)
+    return models
+
+
 def public_error(exc: BaseException) -> str:
     """Turn a provider exception into one sentence for the page or the terminal."""
     text = exc.args[0] if exc.args and isinstance(exc.args[0], str) else str(exc)
     match = _QUOTED_MESSAGE.search(text)
     message = match.group(1) if match else ""
     lowered = f"{message} {text}".lower()
-    if "high demand" in lowered or "503" in lowered or "unavailable" in lowered:
+    if any(token in lowered for token in ("high demand", "503", "504", "unavailable", "deadline")):
         return "Gemini is busy right now. Wait a moment and run the question again."
     if "no longer available" in lowered:
         return "The configured Gemini model is no longer available. Set GOOGLE_MODEL in .env to a current model."
@@ -103,7 +124,9 @@ def public_error(exc: BaseException) -> str:
 def is_temporary(exc: BaseException) -> bool:
     """True when Gemini asked the caller to retry."""
     text = str(exc).lower()
-    return "503" in text or "unavailable" in text or "high demand" in text or "429" in text
+    return any(
+        token in text for token in ("503", "504", "unavailable", "high demand", "429", "deadline")
+    )
 
 
 def _parse_json(text: str, response_format: type[ModelT]) -> ModelT:
