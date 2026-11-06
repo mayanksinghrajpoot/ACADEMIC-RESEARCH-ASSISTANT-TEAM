@@ -34,8 +34,8 @@ class SummaryAgent(Executor):
         super().__init__(id="summary")
         self._completer = completer
 
-    @handler
-    async def summarize(self, dossier: ResearchDossier, ctx: WorkflowContext[ResearchDossier]) -> None:
+    async def apply(self, dossier: ResearchDossier) -> ResearchDossier:
+        """Write claims. Safe to run beside the contradiction check."""
         prompt = _prompt(dossier)
         draft = await self._completer.complete(
             name="summary",
@@ -53,14 +53,17 @@ class SummaryAgent(Executor):
             for index, item in enumerate(draft.claims, start=1)
             if item.text.strip()
         ]
-        updated = dossier.model_copy(
+        return dossier.model_copy(
             update={
                 "claims": claims,
                 "verdicts": [],
                 "needs_revision": False,
             }
         )
-        await ctx.send_message(updated)
+
+    @handler
+    async def summarize(self, dossier: ResearchDossier, ctx: WorkflowContext[ResearchDossier]) -> None:
+        await ctx.send_message(await self.apply(dossier))
 
 
 def _prompt(dossier: ResearchDossier) -> str:

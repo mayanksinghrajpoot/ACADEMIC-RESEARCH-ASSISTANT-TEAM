@@ -43,7 +43,9 @@ class PassageIndex:
     """Read-only retrieval memory for one run.
 
     When document vectors are present and the caller supplies a query vector,
-    the score is ``0.65 * cosine + 0.35 * lexical``. Otherwise ranking is
+    the score is ``0.65 * max(cosine, 0) + 0.35 * lexical``. A negative or
+    zero cosine adds nothing, so a passage with no word overlap and no
+    positive similarity scores zero and is dropped. Otherwise ranking is
     lexical only, which still works on a small corpus.
     """
 
@@ -93,11 +95,26 @@ class PassageIndex:
             if use_vectors:
                 assert self.embeddings is not None
                 cosine = cosine_similarity(query_embedding, self.embeddings[index])
-                score = 0.65 * _unit_interval(cosine) + 0.35 * lexical
+                score = 0.65 * max(cosine, 0.0) + 0.35 * lexical
             else:
                 score = lexical
             scored.append((passage, score))
         return scored
+
+
+def corpus_covers(question: str, index: PassageIndex) -> bool:
+    """True when the question shares a content word with a stored passage.
+
+    This runs before any chat call. A question the papers never mention stops
+    here instead of paying for the agent chain.
+    """
+    query_tokens = tokenize(question)
+    if not query_tokens:
+        return False
+    for passage in index.passages:
+        if query_tokens & tokenize(f"{passage.title} {passage.text}"):
+            return True
+    return False
 
 
 def tokenize(text: str) -> set[str]:
@@ -124,7 +141,3 @@ def cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
     if left_norm == 0 or right_norm == 0:
         return 0.0
     return dot / (math.sqrt(left_norm) * math.sqrt(right_norm))
-
-
-def _unit_interval(cosine: float) -> float:
-    return max(0.0, min(1.0, (cosine + 1.0) / 2.0))

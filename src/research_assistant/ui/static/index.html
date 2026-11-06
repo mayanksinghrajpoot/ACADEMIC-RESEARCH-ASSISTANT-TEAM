@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Academic Research Assistant</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div class="page">
+    <header class="mast">
+      <p class="kicker">Local paper corpus</p>
+      <h1>Academic Research Assistant</h1>
+      <p class="lede">Ask a question. The team searches only these papers, then keeps a claim when a retrieved passage contains the quote.</p>
+    </header>
+
+    <div class="layout">
+      <main>
+        <form id="ask" class="ask">
+          <label for="question">Research question</label>
+          <textarea id="question" name="question" rows="4" required placeholder="Does retrieval-augmented generation reduce unsupported claims in scientific question answering?"></textarea>
+          <div class="ask-row">
+            <button id="run" type="submit">Write summary</button>
+            <p id="hint">Ctrl+Enter or Cmd+Enter also runs it.</p>
+          </div>
+        </form>
+
+        <p id="status" class="status" hidden></p>
+        <p id="error" class="error" role="alert" hidden></p>
+
+        <article id="report" class="report" hidden></article>
+      </main>
+
+      <aside class="corpus" aria-labelledby="corpus-title">
+        <h2 id="corpus-title">Papers in this run</h2>
+        <ul id="papers"></ul>
+      </aside>
+    </div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

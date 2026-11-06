@@ -42,8 +42,10 @@ def test_writer_keeps_supported_claims_and_lists_dropped_ones() -> None:
                 topic="Effect of alpha",
                 position_a="Alpha reduces measured error.",
                 passage_ids_a=["paper-a#c0"],
+                quote_a="Alpha reduces measured error when the passage is retrieved and shown.",
                 position_b="Alpha does not reduce measured error.",
                 passage_ids_b=["paper-b#c0"],
+                quote_b="Alpha does not reduce measured error.",
             )
         ],
     )
@@ -56,5 +58,7 @@ def test_writer_keeps_supported_claims_and_lists_dropped_ones() -> None:
     assert "`paper-a#c0`" in themes
     assert "`paper-a#c0`" in contradictions
     assert "`paper-b#c0`" in contradictions
+    assert "Quote: Alpha reduces measured error when the passage is retrieved and shown." in contradictions
+    assert "Quote: Alpha does not reduce measured error." in contradictions
     assert "paper-a#c0" != "paper-b#c0"
     assert "Alpha cures every disease. — No retrieved passage." in dropped

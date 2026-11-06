@@ -41,6 +41,14 @@ def test_cosine_of_identical_vectors_is_one() -> None:
     assert cosine_similarity([1.0, 0.0], [1.0, 0.0]) == pytest.approx(1.0)
 
 
+def test_unrelated_embeddings_do_not_force_a_hit() -> None:
+    index = PassageIndex(
+        [_passage("a", "catalysis recall bottleneck")],
+        embeddings=[[0.0, 1.0]],
+    )
+    assert index.search("unrelated zebrafish sonnet", k=3, query_embedding=[1.0, 0.0]) == []
+
+
 def test_zero_overlap_returns_nothing() -> None:
     index = PassageIndex([_passage("a", "catalysis recall bottleneck")])
     assert index.search("unrelated zebrafish sonnet", k=3) == []

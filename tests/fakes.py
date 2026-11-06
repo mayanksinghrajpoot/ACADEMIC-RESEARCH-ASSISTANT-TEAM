@@ -6,7 +6,6 @@ from research_assistant.agents.contradiction_agent import ContradictionDraft, Co
 from research_assistant.agents.factcheck_agent import FactCheckDraft, VerdictDraft
 from research_assistant.agents.query_agent import QueryDraft
 from research_assistant.agents.summary_agent import ClaimDraft, SummaryDraft
-from research_assistant.agents.writer_agent import OverviewDraft
 
 SUPPORTED_QUOTE = "Alpha reduces measured error when the passage is retrieved and shown."
 BAD_CLAIM = "Alpha cures every disease."
@@ -15,9 +14,17 @@ BAD_CLAIM = "Alpha cures every disease."
 class ScriptedCompleter:
     """Returns schema objects keyed by agent name."""
 
-    def __init__(self, *, revision_still_bad: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        revision_still_bad: bool = False,
+        all_supported: bool = False,
+        smuggle_overview: bool = False,
+    ) -> None:
         self.names: list[str] = []
         self.revision_still_bad = revision_still_bad
+        self.all_supported = all_supported
+        self.smuggle_overview = smuggle_overview
 
     async def complete(self, *, name: str, instructions: str, prompt: str, response_format: type):
         self.names.append(name)
@@ -34,8 +41,10 @@ class ScriptedCompleter:
                         topic="Effect of alpha",
                         position_a="Alpha reduces measured error when the passage is shown.",
                         passage_ids_a=["paper-a#c0"],
+                        quote_a=SUPPORTED_QUOTE,
                         position_b="Alpha does not reduce measured error.",
                         passage_ids_b=["paper-b#c0"],
+                        quote_b="Alpha does not reduce measured error.",
                     )
                 ]
             )
@@ -56,8 +65,6 @@ class ScriptedCompleter:
                     ),
                 ]
             )
-        if name == "writer":
-            return OverviewDraft(overview="Supported claims describe the measured effect of alpha.")
         raise AssertionError(f"unexpected agent {name}")
 
     def _summary(self, prompt: str) -> SummaryDraft:
@@ -67,6 +74,6 @@ class ScriptedCompleter:
             passage_ids=["paper-a#c0"],
         )
         bad = ClaimDraft(theme="Measured effect", text=BAD_CLAIM, passage_ids=["missing-passage"])
-        if "This is a revision" in prompt and not self.revision_still_bad:
+        if self.all_supported or ("This is a revision" in prompt and not self.revision_still_bad):
             return SummaryDraft(claims=[good])
         return SummaryDraft(claims=[good, bad])

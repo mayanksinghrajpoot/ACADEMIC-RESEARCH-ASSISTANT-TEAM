@@ -1,4 +1,5 @@
 from research_assistant.grounding import (
+    accepted_overview,
     grounded_contradictions,
     mark_revision,
     merge_verdicts,
@@ -94,11 +95,22 @@ def test_contradiction_must_cite_two_different_passages() -> None:
                 passage_ids_b=["missing"],
             ),
             Contradiction(
+                topic="Ungrounded wording",
+                position_a="Retrieval helped.",
+                passage_ids_a=["a#c0"],
+                quote_a="this quote is not in the passage at all",
+                position_b="The reduction is disputed.",
+                passage_ids_b=["b#c0"],
+                quote_b="A second paper disputes the reduction in the same setting.",
+            ),
+            Contradiction(
                 topic="Real dispute",
                 position_a="Retrieval helped.",
                 passage_ids_a=["a#c0"],
+                quote_a=QUOTE,
                 position_b="The reduction is disputed.",
                 passage_ids_b=["b#c0"],
+                quote_b="A second paper disputes the reduction in the same setting.",
             ),
         ],
     )
@@ -109,6 +121,25 @@ def test_contradiction_must_cite_two_different_passages() -> None:
     none, empty_note = grounded_contradictions(dossier, [])
     assert none == []
     assert "No contradiction" in empty_note
+
+
+def test_overview_rejects_words_outside_the_supported_claims() -> None:
+    dossier = _dossier(
+        Claim(claim_id="c1", theme="Effect", text="Retrieval lowered unsupported claims.", passage_ids=["a#c0"]),
+        Claim(claim_id="c2", theme="Effect", text="Alpha cures every disease.", passage_ids=[]),
+    ).model_copy(
+        update={
+            "verdicts": [
+                Verdict(claim_id="c1", verdict="supported", reason="Quoted.", supporting_quote=QUOTE),
+                Verdict(claim_id="c2", verdict="unsupported", reason="No passage."),
+            ]
+        }
+    )
+    assert accepted_overview("Retrieval lowered unsupported claims.", dossier) == (
+        "Retrieval lowered unsupported claims."
+    )
+    assert accepted_overview("Alpha cures every disease and more.", dossier) == ""
+    assert accepted_overview("Retrieval lowered unsupported claims by 31 percent.", dossier) == ""
 
 
 def test_revision_is_allowed_only_once() -> None:

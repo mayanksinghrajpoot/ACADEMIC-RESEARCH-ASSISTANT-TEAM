@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from research_assistant.agents.retrieval_agent import RetrievalError
 from research_assistant.config import ConfigurationError, load_settings
+from research_assistant.llm import ModelServiceError, public_error
 from research_assistant.memory.dossier import ResearchDossier
 from research_assistant.orchestration.pipeline import run_research
 from research_assistant.rag.corpus import CorpusError
@@ -36,16 +37,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--corpus", type=Path, default=None, help="Directory of .md or .txt papers.")
     args = parser.parse_args(argv)
 
-    settings = load_settings(Path.cwd())
-    if args.corpus is not None:
-        corpus = args.corpus if args.corpus.is_absolute() else Path.cwd() / args.corpus
-        settings = settings.model_copy(update={"corpus_dir": corpus})
-
     try:
+        settings = load_settings(Path.cwd())
+        if args.corpus is not None:
+            corpus = args.corpus if args.corpus.is_absolute() else Path.cwd() / args.corpus
+            settings = settings.model_copy(update={"corpus_dir": corpus})
         settings.require_api_key()
         dossier = asyncio.run(run_research(" ".join(args.question), settings))
-    except (ConfigurationError, CorpusError, RetrievalError, ValueError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+    except (ConfigurationError, CorpusError, RetrievalError, ValueError, ModelServiceError) as exc:
+        print(f"error: {public_error(exc)}", file=sys.stderr)
         return 1
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:8]

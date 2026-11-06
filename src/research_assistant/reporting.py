@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 
-from research_assistant.memory.dossier import Claim, ResearchDossier
+from research_assistant.memory.dossier import Claim, Passage, ResearchDossier
 
 
 def render_markdown(dossier: ResearchDossier, overview: str) -> str:
@@ -31,6 +31,75 @@ def render_markdown(dossier: ResearchDossier, overview: str) -> str:
     lines.extend(["## Dropped claims", ""])
     lines.extend(_dropped_section(dossier))
     return "\n".join(lines).rstrip() + "\n"
+
+
+def report_view(dossier: ResearchDossier) -> dict[str, object]:
+    """Structured summary for the local page. The same claims the markdown uses."""
+    passages = dossier.passage_index()
+    grouped: OrderedDict[str, list[Claim]] = OrderedDict()
+    for claim in dossier.supported_claims():
+        grouped.setdefault(claim.theme, []).append(claim)
+
+    themes: list[dict[str, object]] = []
+    for theme, claims in grouped.items():
+        items: list[dict[str, object]] = []
+        for claim in claims:
+            verdict = dossier.verdict_for(claim.claim_id)
+            items.append(
+                {
+                    "text": claim.text,
+                    "quote": verdict.supporting_quote if verdict else "",
+                    "sources": _source_records(passages, claim.passage_ids),
+                }
+            )
+        themes.append({"theme": theme, "claims": items})
+
+    contradictions: list[dict[str, object]] = []
+    for item in dossier.contradictions:
+        contradictions.append(
+            {
+                "topic": item.topic,
+                "position_a": item.position_a,
+                "quote_a": item.quote_a,
+                "sources_a": _source_records(passages, item.passage_ids_a),
+                "position_b": item.position_b,
+                "quote_b": item.quote_b,
+                "sources_b": _source_records(passages, item.passage_ids_b),
+            }
+        )
+
+    note = dossier.contradiction_note
+    if not contradictions and not note:
+        note = "No contradiction was found in the retrieved passages."
+
+    return {
+        "question": dossier.question,
+        "overview": _overview_text(dossier),
+        "themes": themes,
+        "contradiction_note": note,
+        "contradictions": contradictions,
+        "dropped": [{"text": item.text, "reason": item.reason} for item in dossier.dropped_claims()],
+        "sub_queries": list(dossier.sub_queries),
+        "passage_count": len(dossier.passages),
+    }
+
+
+def _overview_text(dossier: ResearchDossier) -> str:
+    text = dossier.report_markdown
+    if "## Overview" in text and "## Themes" in text:
+        return text.split("## Overview", 1)[1].split("## Themes", 1)[0].strip()
+    return _default_overview(dossier)
+
+
+def _source_records(passages: dict[str, Passage], passage_ids: list[str]) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    for passage_id in passage_ids:
+        passage = passages.get(passage_id)
+        if passage is None:
+            records.append({"title": passage_id, "passage_id": passage_id})
+            continue
+        records.append({"title": passage.title, "passage_id": passage.passage_id})
+    return records
 
 
 def _default_overview(dossier: ResearchDossier) -> str:
@@ -78,8 +147,12 @@ def _contradiction_section(dossier: ResearchDossier) -> list[str]:
     for item in dossier.contradictions:
         lines.append(f"### {item.topic}")
         lines.append("")
-        lines.append(f"- Position A ({_ids(item.passage_ids_a)}): {item.position_a}")
-        lines.append(f"- Position B ({_ids(item.passage_ids_b)}): {item.position_b}")
+        lines.append(f"- Position A ({_sources(dossier, item.passage_ids_a)}): {item.position_a}")
+        if item.quote_a:
+            lines.append(f"  - Quote: {item.quote_a}")
+        lines.append(f"- Position B ({_sources(dossier, item.passage_ids_b)}): {item.position_b}")
+        if item.quote_b:
+            lines.append(f"  - Quote: {item.quote_b}")
         lines.append("")
     return lines
 
@@ -93,5 +166,13 @@ def _dropped_section(dossier: ResearchDossier) -> list[str]:
     return lines
 
 
-def _ids(passage_ids: list[str]) -> str:
-    return ", ".join(f"`{passage_id}`" for passage_id in passage_ids)
+def _sources(dossier: ResearchDossier, passage_ids: list[str]) -> str:
+    passages = dossier.passage_index()
+    parts: list[str] = []
+    for passage_id in passage_ids:
+        passage = passages.get(passage_id)
+        if passage is None:
+            parts.append(f"`{passage_id}`")
+            continue
+        parts.append(f"{passage.title} (`{passage.passage_id}`)")
+    return ", ".join(parts)

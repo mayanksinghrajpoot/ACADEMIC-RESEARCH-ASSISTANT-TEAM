@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
+import threading
+from collections.abc import Mapping, Sequence
+from typing import Protocol
 
 from agent_framework import Case, Default, Workflow, WorkflowBuilder
-from agent_framework.openai import OpenAIChatClient, OpenAIEmbeddingClient
+from agent_framework.gemini import GeminiChatClient, GeminiEmbeddingClient
 
 from research_assistant.agents import (
     ContradictionAgent,
@@ -15,44 +18,70 @@ from research_assistant.agents import (
     SummaryAgent,
     WriterAgent,
 )
+from research_assistant.agents.opening_agent import OpeningDraft
+from research_assistant.agents.retrieval_agent import RetrievalError
 from research_assistant.config import Settings
 from research_assistant.llm import Completer, FrameworkCompleter
 from research_assistant.memory.dossier import ResearchDossier
 from research_assistant.rag.corpus import Paper, load_corpus, passages_from_papers
-from research_assistant.rag.index import PassageIndex
+from research_assistant.rag.embedding_cache import cache_path, corpus_fingerprint, lookup_vectors, store_vectors
+from research_assistant.rag.index import PassageIndex, corpus_covers
 
 logger = logging.getLogger(__name__)
 
+_INDEX_CACHE: dict[tuple[object, ...], tuple[list[Paper], PassageIndex]] = {}
+_INDEX_LOCK = threading.Lock()
 
-class OpenAIQueryEmbedder:
+
+def clear_index_cache() -> None:
+    """Drop the in-memory passage index. Tests use this between cases."""
+    with _INDEX_LOCK:
+        _INDEX_CACHE.clear()
+
+
+class EmbeddingVector(Protocol):
+    vector: Sequence[float]
+
+
+class EmbeddingClient(Protocol):
+    """Subset of the Gemini embedding client used by retrieval."""
+
+    async def get_embeddings(
+        self,
+        values: Sequence[str],
+        *,
+        options: Mapping[str, str] | None = None,
+    ) -> Sequence[EmbeddingVector]: ...
+
+
+class QueryEmbedder:
     """Embeds a sub-query. A failure falls back to lexical retrieval."""
 
-    def __init__(self, client: OpenAIEmbeddingClient) -> None:
+    def __init__(self, client: EmbeddingClient) -> None:
         self._client = client
 
     async def embed_query(self, text: str) -> list[float] | None:
+        vectors = await self.embed_queries([text])
+        return vectors[0]
+
+    async def embed_queries(self, texts: list[str]) -> list[list[float] | None]:
+        """One embedding request for every sub-query."""
+        if not texts:
+            return []
         try:
-            result = await self._client.get_embeddings([text])
-            return [float(value) for value in result[0].vector]
+            result = await self._client.get_embeddings(list(texts), options={"task_type": "RETRIEVAL_QUERY"})
+            return [[float(value) for value in item.vector] for item in result]
         except Exception as exc:
             logger.warning("Query embedding failed (%s); using lexical overlap.", exc)
-            return None
+            return [None] * len(texts)
 
 
-def build_clients(settings: Settings) -> tuple[OpenAIChatClient, OpenAIEmbeddingClient]:
+def build_clients(settings: Settings) -> tuple[GeminiChatClient, GeminiEmbeddingClient]:
     settings.require_api_key()
-    chat_kwargs: dict[str, str] = {
-        "model": settings.chat_model,
-        "api_key": settings.openai_api_key,
-    }
-    embed_kwargs: dict[str, str] = {
-        "model": settings.embedding_model,
-        "api_key": settings.openai_api_key,
-    }
-    if settings.openai_base_url:
-        chat_kwargs["base_url"] = settings.openai_base_url
-        embed_kwargs["base_url"] = settings.openai_base_url
-    return OpenAIChatClient(**chat_kwargs), OpenAIEmbeddingClient(**embed_kwargs)
+    return (
+        GeminiChatClient(api_key=settings.gemini_api_key, model=settings.chat_model),
+        GeminiEmbeddingClient(api_key=settings.gemini_api_key, model=settings.embedding_model),
+    )
 
 
 def build_workflow(
@@ -62,25 +91,26 @@ def build_workflow(
     index: PassageIndex,
     top_k: int,
     revision_cap: int,
-    embedder: OpenAIQueryEmbedder | None = None,
+    embedder: QueryEmbedder | None = None,
 ) -> Workflow:
-    """Query, retrieval, summary, contradiction, fact-check, then writer.
+    """Query, retrieval, then summary and contradiction together, then fact-check.
 
-    Fact-check sends the dossier back to summary when unsupported claims remain
-    and the revision cap has not been used. The next pass goes to the writer.
+    Fact-check sends the dossier back to summary alone when unsupported claims
+    remain. That retry does not repeat the contradiction call. The writer
+    publishes from the supported claims and does not call the model.
     """
     query = QueryAgent(completer, papers)
     retrieval = RetrievalAgent(index, top_k=top_k, embedder=embedder)
     summary = SummaryAgent(completer)
-    contradiction = ContradictionAgent(completer)
+    opening = OpeningDraft(summary, ContradictionAgent(completer))
     factcheck = FactCheckAgent(completer, revision_cap=revision_cap)
-    writer = WriterAgent(completer)
+    writer = WriterAgent()
     return (
         WorkflowBuilder(start_executor=query, output_from=[writer])
         .add_edge(query, retrieval)
-        .add_edge(retrieval, summary)
-        .add_edge(summary, contradiction)
-        .add_edge(contradiction, factcheck)
+        .add_edge(retrieval, opening)
+        .add_edge(opening, factcheck)
+        .add_edge(summary, factcheck)
         .add_switch_case_edge_group(
             factcheck,
             [
@@ -94,24 +124,59 @@ def build_workflow(
 
 async def prepare_corpus(
     settings: Settings,
-    embedding_client: OpenAIEmbeddingClient | None = None,
+    embedding_client: EmbeddingClient | None = None,
 ) -> tuple[list[Paper], PassageIndex]:
-    """Load papers, chunk them, and attach embeddings when the client succeeds."""
+    """Load papers and reuse embeddings when the corpus and model are unchanged."""
+    key = (
+        str(settings.corpus_dir.resolve()),
+        settings.embedding_model,
+        settings.chunk_size,
+        settings.chunk_overlap,
+        corpus_fingerprint(settings.corpus_dir),
+        embedding_client is not None,
+    )
+    with _INDEX_LOCK:
+        cached = _INDEX_CACHE.get(key)
+        if cached is not None:
+            return cached
+        papers, index, remember = await _load_index(settings, embedding_client)
+        if remember:
+            _INDEX_CACHE[key] = (papers, index)
+        return papers, index
+
+
+async def _load_index(
+    settings: Settings,
+    embedding_client: EmbeddingClient | None,
+) -> tuple[list[Paper], PassageIndex, bool]:
     papers = load_corpus(settings.corpus_dir)
     passages = passages_from_papers(
         papers,
         chunk_size=settings.chunk_size,
         chunk_overlap=settings.chunk_overlap,
     )
-    embeddings: list[list[float]] | None = None
-    if embedding_client is not None:
+    if embedding_client is None:
+        return papers, PassageIndex(passages), True
+
+    path = cache_path(settings.output_dir, settings.embedding_model)
+    stored = lookup_vectors(path, passages)
+    missing = [index for index, vector in enumerate(stored) if vector is None]
+    if missing:
         try:
-            result = await embedding_client.get_embeddings([passage.text for passage in passages])
-            embeddings = [[float(value) for value in item.vector] for item in result]
+            result = await embedding_client.get_embeddings(
+                [passages[index].text for index in missing],
+                options={"task_type": "RETRIEVAL_DOCUMENT"},
+            )
+            for index, item in zip(missing, result, strict=True):
+                stored[index] = [float(value) for value in item.vector]
+            store_vectors(path, passages, stored)
         except Exception as exc:
             logger.warning("Passage embeddings failed (%s); using lexical overlap.", exc)
-            embeddings = None
-    return papers, PassageIndex(passages, embeddings)
+            return papers, PassageIndex(passages), False
+    embeddings = [vector for vector in stored if vector is not None]
+    if len(embeddings) != len(passages):
+        return papers, PassageIndex(passages), False
+    return papers, PassageIndex(passages, embeddings), True
 
 
 async def run_research(
@@ -121,21 +186,26 @@ async def run_research(
     completer: Completer | None = None,
     papers: list[Paper] | None = None,
     index: PassageIndex | None = None,
-    embedder: OpenAIQueryEmbedder | None = None,
+    embedder: QueryEmbedder | None = None,
 ) -> ResearchDossier:
     """Run the workflow. Tests inject a completer and index so no network is used."""
     cleaned = question.strip()
     if not cleaned:
         raise ValueError("A research question is required.")
 
-    embedding_client: OpenAIEmbeddingClient | None = None
+    embedding_client: EmbeddingClient | None = None
     if completer is None or papers is None or index is None:
         if completer is None:
             chat_client, embedding_client = build_clients(settings)
             completer = FrameworkCompleter(chat_client)
-            embedder = OpenAIQueryEmbedder(embedding_client)
+            embedder = QueryEmbedder(embedding_client)
         if papers is None or index is None:
             papers, index = await prepare_corpus(settings, embedding_client)
+
+    if index is None or not corpus_covers(cleaned, index):
+        raise RetrievalError(
+            "These papers do not cover that question. The assistant will not invent sources."
+        )
 
     workflow = build_workflow(
         completer=completer,

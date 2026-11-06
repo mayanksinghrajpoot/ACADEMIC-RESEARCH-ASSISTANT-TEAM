@@ -26,13 +26,15 @@ class Claim(BaseModel):
 
 
 class Contradiction(BaseModel):
-    """Two positions, each tied to different retrieved passages."""
+    """Two positions, each tied to different retrieved passages and a copied quote."""
 
     topic: str
     position_a: str
     passage_ids_a: list[str]
+    quote_a: str = ""
     position_b: str
     passage_ids_b: list[str]
+    quote_b: str = ""
 
 
 class Verdict(BaseModel):
