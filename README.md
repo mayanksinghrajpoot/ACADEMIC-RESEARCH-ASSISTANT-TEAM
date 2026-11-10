@@ -48,7 +48,7 @@ uv run python -m research_assistant "Does retrieval-augmented generation reduce 
 
 The command prints the summary, writes `outputs/<run_id>.md` and `outputs/<run_id>.json`, and appends `logs/run.log`. `--corpus PATH` selects another directory of `.md` or `.txt` papers. `uv run python -m research_assistant.ui` serves the same pipeline at <http://127.0.0.1:8765>.
 
-`corpus/` has six short papers. Iyer 2025 reports that showing passages did not reduce unsupported claims. Okonkwo 2025 reports that requiring a passage id and a quote cut that rate from 31 percent to 6 percent.
+`corpus/` has twelve short papers. Iyer 2025 reports that showing passages did not reduce unsupported claims. Okonkwo 2025 reports that requiring a passage id and a quote cut that rate from 31 percent to 6 percent. Later notes cover quote length, domain shift, tables, duplicate passages, and generalizations the quote gate still misses.
 
 ## Demo, diagram, log, tests
 

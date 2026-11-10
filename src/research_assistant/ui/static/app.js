@@ -28,6 +28,7 @@ async function loadPapers() {
       papers.append(item(payload.error || "The corpus could not be read."));
       return;
     }
+    document.querySelector("#corpus-title").textContent = `Papers in this run (${payload.papers.length})`;
     payload.papers.forEach((paper) => {
       const row = document.createElement("li");
       row.textContent = paper.title;

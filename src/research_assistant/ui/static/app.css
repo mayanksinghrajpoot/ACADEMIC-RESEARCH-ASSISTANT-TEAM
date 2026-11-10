@@ -168,7 +168,13 @@ blockquote {
 
 .saved { margin: 1.2rem 0 0; }
 
-.corpus { padding: 1rem 1rem 1.15rem; }
+.corpus {
+  position: sticky;
+  top: 1rem;
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+  padding: 1rem 1rem 1.15rem;
+}
 
 .corpus h2 { margin: 0 0 0.7rem; font-size: 1.15rem; }
 
